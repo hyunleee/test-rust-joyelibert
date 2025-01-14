@@ -3,19 +3,150 @@
 use curv::arithmetic::traits::*;
 
 use crate::traits::*;
-use crate::{BigInt, Keypair, Paillier};
+use crate::{BigInt, Keypair, Paillier, JoyeLibert};
 
-impl KeyGeneration<Keypair> for Paillier {
-    fn keypair_with_modulus_size(bit_length: usize) -> Keypair {
-        let p = BigInt::sample_prime(bit_length / 2);
-        let q = BigInt::sample_prime(bit_length / 2);
-        Keypair { p, q }
+
+
+
+
+
+// should add picking up y 
+impl KeyGeneration<Keypair> for JoyeLibert {
+    fn keypair_precom() -> Keypair {
+        let p = BigInt::from_str_radix("23199984147340072077100877459017656936448219567273597918425377084508446498270077218316962796544166478076210644017481772229557674431961688814711491654034029474118962639380850425232269199762616300021497775447794820142229798877842201601181840159826692752275435332244961514191205932947191402059591636647466234680633699017671231122769517028405954318320520456512781981317481035207379416665351529504236468027268894334147592929459115692262980255967766460068099605935627696112788016983965697", 10).unwrap();
+        let q = BigInt::from_str_radix("4120196551177181142320555358917013281978183440358644160962397416416651419832573597651802801626242982423889846226683075379947282629863952560097870868680519579633891708511743296095770310867584685074913216326441053246896857391796037932887524417348974952536315601038169386121392155952843813596136140931593728122169008557865411183438662740600610069316566164236323384590482864178595944057841296583144489527521836044888912356223978940167746163804598814936249956741645491488661083006092307", 10).unwrap();
+        let y = BigInt::from_str_radix("62548236153162950920582674737354856125439401858536935144385993478413061121486980371928408128209882727400293417959163082927415186888758310853816398831608482615345358975922467320556759444327513855593968613290017810053873366431258522855175243977374138436538990932555457606692230904915657171120797095126846155240505784375721569057128071474458405434780305067205040970882897399363200676184249878843504717776101869955609218891065429003101919971540439099207159936288599988795066079552052205818092614899690358914284693646340847623105127868901377713630145449607939585652567911216294062409282783090098974624456450051476806945189886625063362488479433666652202473958746419152615374147650173740236169278951234633260109290538344784317270298764319652826843538369261172043757506922729020811433084597410979510743184933307191523299710824200421324858547697042175955139031354558155351464789556170881576555282202001716821184261307210544672041258818560179654243220444457158628485842317", 16).unwrap();
+        let k: usize = 768;
+        Keypair { p, q, y, k}
+    }
+    fn keypair_with_precomputated_prime(
+        bit_length: usize, 
+        msg_length: usize, 
+        p: &BigInt, 
+        q: &BigInt, 
+        y: &BigInt
+    ) -> Keypair {
+        Keypair { p: p.clone(), q: q.clone(), y: y.clone(), k: msg_length }
+    }
+    fn keypair_with_modulus_size(bit_length: usize, msg_length: usize) -> Keypair {
+        let msgsize: u32 = msg_length as u32;
+        // let mut t = BigInt::from(1);
+        let mut t = BigInt::new();
+        let mut tmp = BigInt::new();
+        
+        let mut pseudo_safeness_divisor = BigInt::from(2).pow(msgsize);
+        let mut pseudo_test_p = BigInt::new();
+        let mut pseudo_test_q = BigInt::new();
+
+        // pick p from 2~2^msg_len, where p = 1 mod 2^msg_len
+        let mut p = BigInt::sample(bit_length / 2);
+        let mut p_final = BigInt::new();
+
+        let mut modulus = BigInt::new();
+        modulus = p.modulus(&pseudo_safeness_divisor);
+
+        p = p - modulus;
+        p = p + 1;
+
+        // origin code에서 while 문 내부
+        loop {
+            // info!("p_test: {:?}", p_test);
+            if p.is_probable_prime(30) {
+                // info!("p_test.probab_prime accepted");
+    
+                tmp = p.clone() - 1;
+                pseudo_test_p = tmp / pseudo_safeness_divisor.clone();
+                if pseudo_test_p.is_probable_prime(30) {
+                    p_final = p.clone();
+                // info!("pseudo_test_p.probab_prime accepted") 
+                    break;
+                }
+            }    
+            p += pseudo_safeness_divisor.clone();
+        }
+
+        let mut q = BigInt::sample_prime(bit_length / 2).next_prime();
+        let mut q_final = BigInt::new();
+
+        // origin code에서 while 문 내부
+        loop {
+            if q.is_probable_prime(30){
+                // info!("q_test.probab_prime accepted");
+                tmp = q.clone() % 4;
+                if tmp.cmp(&BigInt::from(3)).is_eq() {
+                    q_final = q.clone();
+                    // info!("q_test % 4 == 3");
+                    break;
+                }
+            }
+            q = q.next_prime();
+        }
+        // info!("q loop finished");
+        let mut y = BigInt::sample_prime(bit_length / 2);
+        while BigInt::jacobi(&y, &p) != -1 || BigInt::jacobi(&y, &q) != -1 {
+            y = BigInt::sample_prime(bit_length);
+        }
+
+        let k: usize = msg_length;
+        Keypair { p: p_final, q: q_final, y, k }
     }
 
-    fn keypair_safe_primes_with_modulus_size(bit_length: usize) -> Keypair {
-        let p = BigInt::sample_safe_prime(bit_length / 2);
-        let q = BigInt::sample_safe_prime(bit_length / 2);
-        Keypair { p, q }
+    fn keypair_safe_primes_with_modulus_size(bit_length: usize, msg_length: usize) -> Keypair {
+        let msgsize: u32 = msg_length as u32;
+        // let mut t = BigInt::from(1);
+        let mut t = BigInt::new();
+        let mut tmp = BigInt::new();
+        
+        let mut pseudo_safeness_divisor = BigInt::from(2).pow(msgsize);
+        let mut pseudo_test_p = BigInt::new();
+        let mut pseudo_test_q = BigInt::new();
+
+        // pick p from 2~2^msg_len, where p = 1 mod 2^msg_len
+        let mut p = BigInt::sample_safe_prime(bit_length / 2);
+        let mut p_final = BigInt::new();
+        p -= p.clone() % BigInt::from(2).pow(msgsize) + 1;
+
+        // origin code에서 while 문 내부
+        loop {
+            // info!("p_test: {:?}", p_test);
+            if p.is_probable_prime(30) {
+                // info!("p_test.probab_prime accepted");
+    
+                tmp = p.clone() - 1;
+                pseudo_test_p = tmp / pseudo_safeness_divisor.clone();
+                if pseudo_test_p.is_probable_prime(30) {
+                    p_final = p.clone();
+                // info!("pseudo_test_p.probab_prime accepted") 
+                    break;
+                }
+            }    
+            p += pseudo_safeness_divisor.clone();
+        }
+
+        let mut q = BigInt::sample_safe_prime(bit_length / 2).next_prime();
+        let mut q_final = BigInt::new();
+
+        // origin code에서 while 문 내부
+        loop {
+            if q.is_probable_prime(30){
+                // info!("q_test.probab_prime accepted");
+                tmp = q.clone() % 4;
+                if tmp.cmp(&BigInt::from(3)).is_eq() {
+                    q_final = q.clone();
+                    // info!("q_test % 4 == 3");
+                    break;
+                }
+            }
+            q = q.next_prime();
+        }
+        // info!("q loop finished");
+        let mut y = BigInt::sample_safe_prime(bit_length / 2);
+        while BigInt::jacobi(&y, &p) != -1 || BigInt::jacobi(&y, &q) != -1 {
+            y = BigInt::sample_prime(bit_length);
+        }
+
+        let k: usize = msg_length;
+        Keypair { p, q, y, k }
     }
 }
 

@@ -1,16 +1,25 @@
 //! Core Paillier encryption scheme supporting ciphertext addition and plaintext multiplication.
 
 use std::borrow::{Borrow, Cow};
+use std::ops::Neg;
 
 use rayon::join;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::traits::*;
+use crate::{traits::*, JoyeLibert};
 use crate::{
-    BigInt, DecryptionKey, EncryptionKey, Keypair, MinimalDecryptionKey, MinimalEncryptionKey,
+    BigInt, DecryptionKey, EncryptionKey, Keypair,
     Paillier, RawCiphertext, RawPlaintext,
 };
 use curv::arithmetic::traits::*;
+
+#[cfg(not(test))] 
+pub use log::{info, warn}; // Use log crate when building application
+
+#[cfg(test)]
+use std::{println as info, println as warn};
+
+
 
 impl Keypair {
     /// Generate default encryption and decryption keys.
@@ -19,111 +28,60 @@ impl Keypair {
     }
 }
 
-impl<'p, 'q> From<(&'p BigInt, &'q BigInt)> for Keypair {
-    fn from((p, q): (&'p BigInt, &'q BigInt)) -> Keypair {
+impl<'p, 'q, 'y, 'k> From<(&'p BigInt, &'q BigInt, &'y BigInt, &'k usize)> for Keypair {
+    fn from((p, q, y, k): (&'p BigInt, &'q BigInt, &'y BigInt, &'k usize)) -> Keypair {
         Keypair {
             p: p.clone(),
             q: q.clone(),
+            y: y.clone(),
+            k: k.clone(),
         }
-    }
-}
-
-impl<'kp> From<&'kp Keypair> for MinimalEncryptionKey {
-    fn from(keypair: &'kp Keypair) -> Self {
-        MinimalEncryptionKey {
-            n: &keypair.p * &keypair.q,
-        }
-    }
-}
-
-impl<'e> From<&'e EncryptionKey> for MinimalEncryptionKey {
-    fn from(ek: &'e EncryptionKey) -> Self {
-        MinimalEncryptionKey { n: ek.n.clone() }
-    }
-}
-
-impl<'e> From<MinimalEncryptionKey> for EncryptionKey {
-    fn from(ek: MinimalEncryptionKey) -> Self {
-        let nn = &ek.n * &ek.n;
-        let n = ek.n;
-        EncryptionKey { n, nn }
     }
 }
 
 impl<'kp> From<&'kp Keypair> for EncryptionKey {
     fn from(keypair: &'kp Keypair) -> Self {
-        let minimal = MinimalEncryptionKey::from(keypair);
-        EncryptionKey::from(minimal)
-    }
-}
-
-// TODO[Morten] where is this needed?
-impl<'n> From<&'n BigInt> for EncryptionKey {
-    fn from(n: &'n BigInt) -> Self {
-        let minimal = MinimalEncryptionKey { n: n.clone() };
-        EncryptionKey::from(minimal)
+        
+        EncryptionKey{
+            n: keypair.p.clone() * keypair.q.clone(),
+            y: keypair.y.clone(),
+            k: keypair.k
+        }
     }
 }
 
 impl Serialize for EncryptionKey {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let minimal = MinimalEncryptionKey::from(self);
-        minimal.serialize(serializer)
+        self.serialize(serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for EncryptionKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let minimal = MinimalEncryptionKey::deserialize(deserializer)?;
-        Ok(EncryptionKey::from(minimal))
-    }
-}
-
-impl<'kp> From<&'kp Keypair> for MinimalDecryptionKey {
-    fn from(keypair: &'kp Keypair) -> Self {
-        MinimalDecryptionKey {
-            p: keypair.p.clone(),
-            q: keypair.q.clone(),
-        }
-    }
-}
-
-impl<'e> From<&'e DecryptionKey> for MinimalDecryptionKey {
-    fn from(dk: &'e DecryptionKey) -> Self {
-        MinimalDecryptionKey {
-            p: dk.p.clone(),
-            q: dk.q.clone(),
-        }
-    }
-}
-
-impl<'e> From<MinimalDecryptionKey> for DecryptionKey {
-    fn from(dk: MinimalDecryptionKey) -> Self {
-        let p = dk.p;
-        let q = dk.q;
-
-        DecryptionKey { p, q }
+        Ok(EncryptionKey::deserialize(deserializer)?)
     }
 }
 
 impl<'kp> From<&'kp Keypair> for DecryptionKey {
     fn from(keypair: &'kp Keypair) -> DecryptionKey {
-        let minimal = MinimalDecryptionKey::from(keypair);
-        DecryptionKey::from(minimal)
+        DecryptionKey {
+            p: keypair.p.clone(),
+            q: keypair.q.clone(),
+            y: keypair.y.clone(),
+            k: keypair.k,
+        }
     }
 }
 
 impl Serialize for DecryptionKey {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let minimal = MinimalDecryptionKey::from(self);
-        minimal.serialize(serializer)
+        self.serialize(serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for DecryptionKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let minimal = MinimalDecryptionKey::deserialize(deserializer)?;
-        Ok(DecryptionKey::from(minimal))
+        Ok(DecryptionKey::deserialize(deserializer)?)
     }
 }
 
@@ -186,267 +144,133 @@ impl<'b> From<RawCiphertext<'b>> for BigInt {
         x.0.into_owned()
     }
 }
-
-impl<'m, 'd> Encrypt<EncryptionKey, RawPlaintext<'m>, RawCiphertext<'d>> for Paillier {
+/// ///////////////////////////////////////////
+/// encryption  part
+/// ///////////////////////////////////////////
+impl<'m, 'd> Encrypt<EncryptionKey, RawPlaintext<'m>, RawCiphertext<'d>> for JoyeLibert {
     fn encrypt(ek: &EncryptionKey, m: RawPlaintext<'m>) -> RawCiphertext<'d> {
-        let r = Randomness::sample(ek);
-        let rn = BigInt::mod_pow(&r.0, &ek.n, &ek.nn);
-        let gm: BigInt = (m.0.borrow() as &BigInt * &ek.n + 1) % &ek.nn;
-        let c = (gm * rn) % &ek.nn;
+        let mut x = Randomness::sample(ek);
+        // Pick a random x in Z_N^*
+        while  x.0.cmp(&BigInt::zero()).is_eq() {
+            x = Randomness::sample(ek);
+        }
+        // info!("x: {:?}", x);
+
+    
+        // Compute 2^msgsize
+        let mut k_exp = BigInt::new();
+        k_exp = BigInt::ui_pow_ui(2, ek.k as u32);
+        // info!("k_exp: {:?}", k_exp);
+    
+        // let mut tmp1 = BigInt::new();
+        let mut tmp2 = BigInt::new();
+    
+        // tmp1 = ek.y.pow()
+
+        let mut tmp1 = BigInt::mod_pow(&ek.y, &m.0.borrow(), &ek.n);
+        let mut tmp2 = BigInt::mod_pow(&x.0, &k_exp, &ek.n);
+        // info!("tmp1: {:?}", tmp1);
+        // info!("tmp2: {:?}", tmp2);
+    
+    
+        // info!("c: {:?}", *c);
+        let c = tmp1 * tmp2 % ek.n.borrow();
+        // *c = tmp1.borrow() * tmp2.borrow();
+        // // info!("c: {:?}", *c);
+        // *c = c.borrow() % N;
+        // // info!("c: {:?}", *c);
+
+
+        // let r = Randomness::sample(ek);
+        // let rn = BigInt::mod_pow(&r.0, &ek.n, &ek.nn);
+        // let gm: BigInt = (m.0.borrow() as &BigInt * &ek.n + 1) % &ek.nn;
+        // let c = (gm * rn) % &ek.nn;
+        info!("enc result: {:?}", c);
         RawCiphertext(Cow::Owned(c))
     }
 }
 
-impl<'m, 'r, 'd>
-    EncryptWithChosenRandomness<EncryptionKey, RawPlaintext<'m>, &'r Randomness, RawCiphertext<'d>>
-    for Paillier
-{
-    fn encrypt_with_chosen_randomness(
-        ek: &EncryptionKey,
-        m: RawPlaintext<'m>,
-        r: &'r Randomness,
-    ) -> RawCiphertext<'d> {
-        let rn = BigInt::mod_pow(&r.0, &ek.n, &ek.nn);
-        let gm: BigInt = (m.0.borrow() as &BigInt * &ek.n + 1) % &ek.nn;
-        let c = (gm * rn) % &ek.nn;
-        RawCiphertext(Cow::Owned(c))
-    }
-}
 
-impl<'m, 'r, 'd>
-    EncryptWithChosenRandomness<
-        EncryptionKey,
-        RawPlaintext<'m>,
-        &'r PrecomputedRandomness,
-        RawCiphertext<'d>,
-    > for Paillier
-{
-    fn encrypt_with_chosen_randomness(
-        ek: &EncryptionKey,
-        m: RawPlaintext<'m>,
-        rn: &'r PrecomputedRandomness,
-    ) -> RawCiphertext<'d> {
-        let gm: BigInt = (m.0.borrow() as &BigInt * &ek.n + 1) % &ek.nn;
-        let c = (gm * &rn.0) % &ek.nn;
-        RawCiphertext(Cow::Owned(c))
-    }
-}
 
-impl<'m, 'd> Encrypt<DecryptionKey, RawPlaintext<'m>, RawCiphertext<'d>> for Paillier {
-    fn encrypt(dk: &DecryptionKey, m: RawPlaintext<'m>) -> RawCiphertext<'d> {
-        let dk_pp = &dk.p * &dk.p;
-        let dk_qq = &dk.q * &dk.q;
-        let dk_n = &dk.q * &dk.p;
-        let dk_ppinv = BigInt::mod_inv(&dk_pp, &dk_qq).unwrap();
-        let (mp, mq) = crt_decompose(m.0.borrow(), &dk_pp, &dk_qq);
-        let (cp, cq) = join(
-            || {
-                let rp = BigInt::sample_below(&dk.p);
-                let rnp = BigInt::mod_pow(&rp, &dk_n, &dk_pp);
-                let gmp = (1 + mp * &dk_n) % &dk_pp; // TODO[Morten] maybe there's more to get here
-                (gmp * rnp) % &dk_pp
-            },
-            || {
-                let rq = BigInt::sample_below(&dk.q);
-                let rnq = BigInt::mod_pow(&rq, &dk_n, &dk_qq);
-                let gmq = (1 + mq * &dk_n) % &dk_qq; // TODO[Morten] maybe there's more to get here
-                (gmq * rnq) % &dk_qq
-            },
-        );
-        let c = crt_recombine(cp, cq, &dk_pp, &dk_qq, &dk_ppinv);
-        RawCiphertext(Cow::Owned(c))
-    }
-}
-
-impl<'m, 'r, 'd>
-    EncryptWithChosenRandomness<DecryptionKey, RawPlaintext<'m>, &'r Randomness, RawCiphertext<'d>>
-    for Paillier
-{
-    fn encrypt_with_chosen_randomness(
-        dk: &DecryptionKey,
-        m: RawPlaintext<'m>,
-        r: &'r Randomness,
-    ) -> RawCiphertext<'d> {
-        let dk_pp = &dk.p * &dk.p;
-        let dk_qq = &dk.q * &dk.q;
-        let dk_n = &dk.q * &dk.p;
-        let dk_ppinv = BigInt::mod_inv(&dk_pp, &dk_qq).unwrap();
-        let (mp, mq) = crt_decompose(m.0.borrow(), &dk_pp, &dk_qq);
-        let (rp, rq) = crt_decompose(&r.0, &dk_pp, &dk_qq);
-        let (cp, cq) = join(
-            || {
-                let rnp = BigInt::mod_pow(&rp, &dk_n, &dk_pp);
-                let gmp = (1 + mp * &dk_n) % &dk_pp; // TODO[Morten] maybe there's more to get here
-                (gmp * rnp) % &dk_pp
-            },
-            || {
-                let rnq = BigInt::mod_pow(&rq, &dk_n, &dk_qq);
-                let gmq = (1 + mq * &dk_n) % &dk_qq; // TODO[Morten] maybe there's more to get here
-                (gmq * rnq) % &dk_qq
-            },
-        );
-        let c = crt_recombine(cp, cq, &dk_pp, &dk_qq, &dk_ppinv);
-        RawCiphertext(Cow::Owned(c))
-    }
-}
-
-impl<'m, 'r, 'd>
-    EncryptWithChosenRandomness<
-        DecryptionKey,
-        RawPlaintext<'m>,
-        &'r PrecomputedRandomness,
-        RawCiphertext<'d>,
-    > for Paillier
-{
-    fn encrypt_with_chosen_randomness(
-        dk: &DecryptionKey,
-        m: RawPlaintext<'m>,
-        rn: &'r PrecomputedRandomness,
-    ) -> RawCiphertext<'d> {
-        let dk_n = &dk.q * &dk.p;
-        let dk_nn = &dk_n * &dk_n;
-        let gm = (1 + m.0.borrow() as &BigInt * &dk_n) % &dk_nn;
-        let c = (gm * &rn.0) % &dk_nn;
-        RawCiphertext(Cow::Owned(c))
-    }
-}
-
-impl<'ek, 'r> PrecomputeRandomness<&'ek EncryptionKey, &'r BigInt, PrecomputedRandomness>
-    for Paillier
-{
-    fn precompute(ek: &'ek EncryptionKey, r: &'r BigInt) -> PrecomputedRandomness {
-        let rn = BigInt::mod_pow(r, &ek.n, &ek.nn);
-        PrecomputedRandomness(rn)
-    }
-}
-
-impl<'c, 'd> Rerandomize<EncryptionKey, RawCiphertext<'c>, RawCiphertext<'d>> for Paillier {
-    fn rerandomize(ek: &EncryptionKey, c: RawCiphertext<'c>) -> RawCiphertext<'d> {
-        let r = BigInt::sample_below(&ek.n);
-        let rn = BigInt::mod_pow(&r, &ek.n, &ek.nn);
-        let d = (c.0.borrow() as &BigInt * rn) % &ek.nn;
-        RawCiphertext(Cow::Owned(d))
-    }
-}
-
-/// TODO
-///
-/// Efficient decryption using CRT based on [Paillier99, section 7](http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.112.4035&rep=rep1&type=pdf)
-impl<'c, 'm> Decrypt<DecryptionKey, RawCiphertext<'c>, RawPlaintext<'m>> for Paillier {
+impl<'c, 'm> Decrypt<DecryptionKey, RawCiphertext<'c>, RawPlaintext<'m>> for JoyeLibert {
     fn decrypt(dk: &DecryptionKey, c: RawCiphertext<'c>) -> RawPlaintext<'m> {
         Self::decrypt(dk, &c)
     }
 }
 
+/// ///////////////////////////////////////////
 /// TODO
-///
-/// Efficient decryption using CRT based on [Paillier99, section 7](http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.112.4035&rep=rep1&type=pdf)
-impl<'c, 'm> Decrypt<DecryptionKey, &'c RawCiphertext<'c>, RawPlaintext<'m>> for Paillier {
+/// ///////////////////////////////////////////
+impl<'c, 'm> Decrypt<DecryptionKey, &'c RawCiphertext<'c>, RawPlaintext<'m>> for JoyeLibert {
     fn decrypt(dk: &DecryptionKey, c: &'c RawCiphertext<'c>) -> RawPlaintext<'m> {
-        let dk_qq = &dk.q * &dk.q;
-        let dk_pp = &dk.p * &dk.p;
-        let dk_n = &dk.p * &dk.q;
-        let dk_pinv = BigInt::mod_inv(&dk.p, &dk.q).unwrap();
-        let dk_qminusone = &dk.q - BigInt::one();
-        let dk_pminusone = &dk.p - BigInt::one();
-        let dk_hp = h(&dk.p, &dk_pp, &dk_n);
-        let dk_hq = h(&dk.q, &dk_qq, &dk_n);
-        let (cp, cq) = crt_decompose(c.0.borrow(), &dk_pp, &dk_qq);
-        // decrypt in parallel with respectively p and q
-        let (mp, mq) = join(
-            || {
-                // process using p
-                let dp = BigInt::mod_pow(&cp, &dk_pminusone, &dk_pp);
-                let lp = l(&dp, &dk.p);
-                (&lp * &dk_hp) % &dk.p
-            },
-            || {
-                // process using q
-                let dq = BigInt::mod_pow(&cq, &dk_qminusone, &dk_qq);
-                let lq = l(&dq, &dk.q);
-                (&lq * &dk_hq) % &dk.q
-            },
-        );
-        // perform CRT
-        let m = crt_recombine(mp, mq, &dk.p, &dk.q, &dk_pinv);
+
+        let mut m = BigInt::new();
+
+
+        // decrypt algorithm
+
+
         RawPlaintext(Cow::Owned(m))
     }
 }
 
-impl<'c, 'm> Open<DecryptionKey, RawCiphertext<'c>, RawPlaintext<'m>, Randomness> for Paillier {
-    fn open(dk: &DecryptionKey, c: RawCiphertext<'c>) -> (RawPlaintext<'m>, Randomness) {
-        Self::open(dk, &c)
-    }
-}
 
-impl<'c, 'm> Open<DecryptionKey, &'c RawCiphertext<'c>, RawPlaintext<'m>, Randomness> for Paillier {
-    fn open(dk: &DecryptionKey, c: &'c RawCiphertext<'c>) -> (RawPlaintext<'m>, Randomness) {
-        let dk_n = &dk.p * &dk.q;
-        let dk_nn = &dk_n * &dk_n;
-
-        let m = Self::decrypt(dk, c);
-        let gminv = (BigInt::one() - (m.0.borrow() as &BigInt) * &dk_n) % &dk_nn;
-        let rn = (c.0.borrow() as &BigInt * gminv) % &dk_nn;
-        let r = extract_nroot(dk, &rn);
-        (m, Randomness(r))
-    }
-}
 
 impl<'c1, 'c2, 'd> Add<EncryptionKey, RawCiphertext<'c1>, RawCiphertext<'c2>, RawCiphertext<'d>>
-    for Paillier
+    for JoyeLibert
 {
     fn add(
         ek: &EncryptionKey,
         c1: RawCiphertext<'c1>,
         c2: RawCiphertext<'c2>,
     ) -> RawCiphertext<'d> {
-        let d = (c1.0.borrow() as &BigInt * c2.0.borrow() as &BigInt) % &ek.nn;
+        let d = (c1.0.borrow() as &BigInt * c2.0.borrow() as &BigInt) % &ek.n;
         RawCiphertext(Cow::Owned(d))
     }
 }
 
 impl<'c, 'm, 'd> Add<EncryptionKey, RawCiphertext<'c>, RawPlaintext<'m>, RawCiphertext<'d>>
-    for Paillier
+    for JoyeLibert
 {
     fn add(ek: &EncryptionKey, c: RawCiphertext<'c>, m: RawPlaintext<'m>) -> RawCiphertext<'d> {
         let c1 = c.0.borrow() as &BigInt;
-        let c2 = (m.0.borrow() as &BigInt * &ek.n + 1) % &ek.nn;
-        let d = (c1 * c2) % &ek.nn;
+        let c2 = (m.0.borrow() as &BigInt * &ek.n + 1) % &ek.n;
+        let d = (c1 * c2) % &ek.n;
         RawCiphertext(Cow::Owned(d))
     }
 }
 
 impl<'c, 'm, 'd> Add<EncryptionKey, RawPlaintext<'m>, RawCiphertext<'c>, RawCiphertext<'d>>
-    for Paillier
+    for JoyeLibert
 {
     fn add(ek: &EncryptionKey, m: RawPlaintext<'m>, c: RawCiphertext<'c>) -> RawCiphertext<'d> {
-        let c1 = (m.0.borrow() as &BigInt * &ek.n + 1) % &ek.nn;
+        let c1 = (m.0.borrow() as &BigInt * &ek.n + 1) % &ek.n;
         let c2 = c.0.borrow() as &BigInt;
-        let d = (c1 * c2) % &ek.nn;
+        let d = (c1 * c2) % &ek.n;
         RawCiphertext(Cow::Owned(d))
     }
 }
 
 impl<'c, 'm, 'd> Mul<EncryptionKey, RawCiphertext<'c>, RawPlaintext<'m>, RawCiphertext<'d>>
-    for Paillier
+    for JoyeLibert
 {
     fn mul(ek: &EncryptionKey, c: RawCiphertext<'c>, m: RawPlaintext<'m>) -> RawCiphertext<'d> {
         RawCiphertext(Cow::Owned(BigInt::mod_pow(
             c.0.borrow(),
             m.0.borrow(),
-            &ek.nn,
+            &ek.n,
         )))
     }
 }
 
 impl<'c, 'm, 'd> Mul<EncryptionKey, RawPlaintext<'m>, RawCiphertext<'c>, RawCiphertext<'d>>
-    for Paillier
+    for JoyeLibert
 {
     fn mul(ek: &EncryptionKey, m: RawPlaintext<'m>, c: RawCiphertext<'c>) -> RawCiphertext<'d> {
         RawCiphertext(Cow::Owned(BigInt::mod_pow(
             c.0.borrow(),
             m.0.borrow(),
-            &ek.nn,
+            &ek.n,
         )))
     }
 }
@@ -522,9 +346,11 @@ mod tests {
     extern crate serde_json;
 
     fn test_keypair() -> Keypair {
-        let p = BigInt::from_str_radix("148677972634832330983979593310074301486537017973460461278300587514468301043894574906886127642530475786889672304776052879927627556769456140664043088700743909632312483413393134504352834240399191134336344285483935856491230340093391784574980688823380828143810804684752914935441384845195613674104960646037368551517", 10).unwrap();
-        let q = BigInt::from_str_radix("158741574437007245654463598139927898730476924736461654463975966787719309357536545869203069369466212089132653564188443272208127277664424448947476335413293018778018615899291704693105620242763173357203898195318179150836424196645745308205164116144020613415407736216097185962171301808761138424668335445923774195463", 10).unwrap();
-        Keypair { p, q }
+        let p = BigInt::from_str_radix("23199984147340072077100877459017656936448219567273597918425377084508446498270077218316962796544166478076210644017481772229557674431961688814711491654034029474118962639380850425232269199762616300021497775447794820142229798877842201601181840159826692752275435332244961514191205932947191402059591636647466234680633699017671231122769517028405954318320520456512781981317481035207379416665351529504236468027268894334147592929459115692262980255967766460068099605935627696112788016983965697", 10).unwrap();
+        let q = BigInt::from_str_radix("4120196551177181142320555358917013281978183440358644160962397416416651419832573597651802801626242982423889846226683075379947282629863952560097870868680519579633891708511743296095770310867584685074913216326441053246896857391796037932887524417348974952536315601038169386121392155952843813596136140931593728122169008557865411183438662740600610069316566164236323384590482864178595944057841296583144489527521836044888912356223978940167746163804598814936249956741645491488661083006092307", 10).unwrap();
+        let y = BigInt::from_str_radix("62548236153162950920582674737354856125439401858536935144385993478413061121486980371928408128209882727400293417959163082927415186888758310853816398831608482615345358975922467320556759444327513855593968613290017810053873366431258522855175243977374138436538990932555457606692230904915657171120797095126846155240505784375721569057128071474458405434780305067205040970882897399363200676184249878843504717776101869955609218891065429003101919971540439099207159936288599988795066079552052205818092614899690358914284693646340847623105127868901377713630145449607939585652567911216294062409282783090098974624456450051476806945189886625063362488479433666652202473958746419152615374147650173740236169278951234633260109290538344784317270298764319652826843538369261172043757506922729020811433084597410979510743184933307191523299710824200421324858547697042175955139031354558155351464789556170881576555282202001716821184261307210544672041258818560179654243220444457158628485842317", 16).unwrap();
+        let k: usize = 768;
+        Keypair { p, q, y, k}
     }
 
     #[test]
@@ -532,90 +358,23 @@ mod tests {
         let (ek, dk) = test_keypair().keys();
 
         let p = RawPlaintext::from(BigInt::from(10));
-        let c = Paillier::encrypt(&ek, p.clone());
+        let c = JoyeLibert::encrypt(&ek, p.clone());
 
-        let recovered_p = Paillier::decrypt(&dk, c);
+        let recovered_p = JoyeLibert::decrypt(&dk, c);
         assert_eq!(recovered_p, p);
     }
 
-    #[test]
-    fn test_correct_opening() {
-        let (ek, dk) = test_keypair().keys();
-
-        let c = Paillier::encrypt(&ek, RawPlaintext::from(BigInt::from(10)));
-        let (m, r) = Paillier::open(&dk, &c);
-        let d = Paillier::encrypt_with_chosen_randomness(&ek, m, &r);
-        assert_eq!(c, d);
-    }
-
-    #[test]
-    fn test_correct_addition() {
-        let (ek, dk) = test_keypair().keys();
-
-        let m1 = RawPlaintext::from(BigInt::from(10));
-        let c1 = Paillier::encrypt(&ek, m1);
-        let m2 = RawPlaintext::from(BigInt::from(20));
-        let c2 = Paillier::encrypt(&ek, m2);
-
-        let c = Paillier::add(&ek, c1, c2);
-        let m = Paillier::decrypt(&dk, c);
-        assert_eq!(m, BigInt::from(30).into());
-    }
-
-    #[test]
-    fn test_correct_addition_from_plaintext() {
-        let (ek, dk) = test_keypair().keys();
-
-        let m1 = RawPlaintext::from(BigInt::from(2).pow(120));
-        let c1 = Paillier::encrypt(&ek, m1);
-        let m2 = RawPlaintext::from(BigInt::from(2).pow(120));
-        let c = Paillier::add(&ek, c1, m2);
-        let m = Paillier::decrypt(&dk, c);
-        assert_eq!(m, BigInt::from(2).pow(121).into());
-    }
-
-    #[test]
-    fn correct_multiplication() {
-        let (ek, dk) = test_keypair().keys();
-
-        let m1 = RawPlaintext::from(BigInt::from(10));
-        let c1 = Paillier::encrypt(&ek, m1);
-        let m2 = RawPlaintext::from(BigInt::from(20));
-
-        let c = Paillier::mul(&ek, c1, m2);
-        let m = Paillier::decrypt(&dk, c);
-        assert_eq!(m, BigInt::from(200).into());
-    }
-
+    
     #[test]
     fn test_correct_keygen() {
-        let (ek, dk): (EncryptionKey, _) = Paillier::keypair_with_modulus_size(2048).keys();
+        let (ek, dk): (EncryptionKey, _) = JoyeLibert::keypair_with_modulus_size(3072, 768).keys();
 
         let m = RawPlaintext::from(BigInt::from(10));
-        let c = Paillier::encrypt(&ek, m.clone()); // TODO avoid clone
+        let c = JoyeLibert::encrypt(&ek, m.clone()); // TODO avoid clone
 
-        let recovered_m = Paillier::decrypt(&dk, c);
+        let recovered_m = JoyeLibert::decrypt(&dk, c);
         assert_eq!(recovered_m, m);
     }
 
-    #[test]
-    fn test_key_serialization() {
-        let (ek, dk) = test_keypair().keys();
-
-        let ek_serialized = serde_json::to_string(&ek).unwrap();
-        let ek_recovered: EncryptionKey = serde_json::from_str(&ek_serialized).unwrap();
-        assert_eq!(ek, ek_recovered);
-
-        let dk_serialized = serde_json::to_string(&dk).unwrap();
-        let dk_recovered: DecryptionKey = serde_json::from_str(&dk_serialized).unwrap();
-        assert_eq!(dk, dk_recovered);
-    }
-
-    #[test]
-    fn test_failing_deserialize() {
-        let illformatted = "{\"n\":\"12345abcdef\"}";
-
-        let result: Result<EncryptionKey, _> = serde_json::from_str(&illformatted);
-        assert!(result.is_err())
-    }
+    
 }

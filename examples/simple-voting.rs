@@ -1,6 +1,6 @@
-use kzen_paillier::{
+use rust_joyelibert::{
     Add, Decrypt, DecryptionKey, EncodedCiphertext, Encrypt, EncryptionKey, KeyGeneration,
-    Paillier, Rerandomize,
+    Paillier,JoyeLibert, Rerandomize,
 };
 
 fn main() {
@@ -47,7 +47,7 @@ struct Clerk {
 impl Clerk {
     fn new() -> Self {
         // generate fresh keypair
-        let keypair = Paillier::keypair();
+        let keypair = JoyeLibert::keypair();
         // extract encryption key from keypair
         let (ek, dk) = keypair.keys();
         Clerk { ek, dk }
@@ -60,7 +60,7 @@ impl Clerk {
 
     fn new_voting(&self) -> String {
         // encrypt zero
-        let c = Paillier::encrypt(&self.ek, 0);
+        let c = JoyeLibert::encrypt(&self.ek, 0);
         // serialize the ciphertext
         serde_json::to_string(&c).unwrap()
     }
@@ -69,7 +69,7 @@ impl Clerk {
         // deserialize ciphertext
         let c: EncodedCiphertext<u64> = serde_json::from_str(tally).unwrap();
         // decrypt tally
-        Paillier::decrypt(&self.dk, c)
+        JoyeLibert::decrypt(&self.dk, c)
     }
 }
 
@@ -94,9 +94,9 @@ impl Voter {
         // deserialize current tally ciphertext
         let c: EncodedCiphertext<u64> = serde_json::from_str(tally).unwrap();
         // add own vote
-        let d = Paillier::add(&self.ek, c, if self.vote { 1 } else { 0 });
+        let d = JoyeLibert::add(&self.ek, c, if self.vote { 1 } else { 0 });
         // re-randomize once all homomorphic operations have been performed
-        let d = Paillier::rerandomize(&self.ek, d);
+        // let d = Paillier::rerandomize(&self.ek, d);
         // re-serialize ciphertext
         serde_json::to_string(&d).unwrap()
     }

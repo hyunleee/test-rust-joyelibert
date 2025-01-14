@@ -45,7 +45,6 @@ where
     for _ in 0..component_count {
         let raw_component = &packed_components % &mask; // TODO replace with bitwise AND
 
-        // TODO: can't use .unwrap() below because of https://github.com/rust-lang/rust/issues/82252
         let component =
             T::try_from(&raw_component).unwrap_or_else(|_| panic!("conversion from bigint failed"));
         components.push(component);
