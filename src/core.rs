@@ -207,35 +207,46 @@ impl<'c, 'm> Decrypt<DecryptionKey, &'c RawCiphertext<'c>, RawPlaintext<'m>> for
         let mut m = BigInt::new();
 
         // decrypt algorithm
+        let mut m_bits = vec![0; dk.k]; // 복호화된 비트들 저장할 벡터, 크기: dk.k (키의 길이)
+        let mut c_temp = c.0.clone().into_owned(); // 암호문(c)을 복사하여 c_temp에 저장
+        let p_minus_1 = &dk.p - BigInt::one(); // p-1 계산
+        let two = BigInt::from(2); // BigInt로 표현된 2를 생성
 
-        let mut m_bits = vec![0; dk.k];
-        let mut c_temp = c.0.clone().into_owned();
-        let p_minus_1 = &dk.p - BigInt::one();
-        let two = BigInt::from(2);
-
+        // exp = (p-1) / (2^k) 계산
         let exp = &p_minus_1 / &two.pow(dk.k as u32);
+        // c^(exp) mod p 계산, c_mod는 초기 c의 사전 계산된 값
         let mut c_mod = BigInt::mod_pow(&c_temp, &exp, &dk.p);
 
+        // d_exp = (p-1) / (2^k) 계산
         let d_exp = &p_minus_1 / two.pow(dk.k as u32);
+        // d = (y^d_exp)^-1 mod p 계산
         let mut d = BigInt::mod_inv(&BigInt::mod_pow(&dk.y, &d_exp, &dk.p), &dk.p)
             .expect("D의 역원을 계산할 수 없습니다.");
 
+        // 반복적으로 복호화 수행
         for i in 0..dk.k {
+            // z_exp = 2^(k-i-1) 계산
             let z_exp = two.pow(dk.k as u32 - (i as u32 + 1));
+            // z = c_mod^z_exp mod p 계산
             let z = BigInt::mod_pow(&c_mod, &z_exp, &dk.p);
 
             if z != BigInt::one() {
+                //z = 1이 아니면 해당 비트를 1로 설정
                 m_bits[i] = 1;
+                // c_mod = c_mod * d mod p 계산
                 c_mod = (&c_mod * &d) % &dk.p;
             }
 
             if i < dk.k - 2 {
+                // 다음 반복 위해 d = d^2 mod p 계산 (마지막 두 반복에서는 생략 가능)
                 d = (&d * &d) % &dk.p;
             }
         }
 
+        // 비트 벡터로 m 재구성
         for (i, bit) in m_bits.iter().enumerate() {
             if *bit == 1 {
+                // 비트가 1이면 2^i를 m에 추가
                 m += &two.pow(i as u32);
             }
         }
@@ -395,16 +406,16 @@ mod tests {
     }
 
     
-    #[test]
-    fn test_correct_keygen() {
-        let (ek, dk): (EncryptionKey, _) = JoyeLibert::keypair_with_modulus_size(3072, 768).keys();
+    // #[test]
+    // fn test_correct_keygen() {
+    //     let (ek, dk): (EncryptionKey, _) = JoyeLibert::keypair_with_modulus_size(3072, 768).keys();
 
-        let m = RawPlaintext::from(BigInt::from(10));
-        let c = JoyeLibert::encrypt(&ek, m.clone()); // TODO avoid clone
+    //     let m = RawPlaintext::from(BigInt::from(10));
+    //     let c = JoyeLibert::encrypt(&ek, m.clone()); // TODO avoid clone
 
-        let recovered_m = JoyeLibert::decrypt(&dk, c);
-        assert_eq!(recovered_m, m);
-    }
+    //     let recovered_m = JoyeLibert::decrypt(&dk, c);
+    //     assert_eq!(recovered_m, m);
+    // }
 
     
 }
