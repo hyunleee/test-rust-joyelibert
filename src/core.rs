@@ -206,9 +206,39 @@ impl<'c, 'm> Decrypt<DecryptionKey, &'c RawCiphertext<'c>, RawPlaintext<'m>> for
 
         let mut m = BigInt::new();
 
-
         // decrypt algorithm
 
+        let mut m_bits = vec![0; dk.k];
+        let mut c_temp = c.0.clone().into_owned();
+        let p_minus_1 = &dk.p - BigInt::one();
+        let two = BigInt::from(2);
+
+        let exp = &p_minus_1 / &two.pow(dk.k as u32);
+        let mut c_mod = BigInt::mod_pow(&c_temp, &exp, &dk.p);
+
+        let d_exp = &p_minus_1 / two.pow(dk.k as u32);
+        let mut d = BigInt::mod_inv(&BigInt::mod_pow(&dk.y, &d_exp, &dk.p), &dk.p)
+            .expect("D의 역원을 계산할 수 없습니다.");
+
+        for i in 0..dk.k {
+            let z_exp = two.pow(dk.k as u32 - (i as u32 + 1));
+            let z = BigInt::mod_pow(&c_mod, &z_exp, &dk.p);
+
+            if z != BigInt::one() {
+                m_bits[i] = 1;
+                c_mod = (&c_mod * &d) % &dk.p;
+            }
+
+            if i < dk.k - 2 {
+                d = (&d * &d) % &dk.p;
+            }
+        }
+
+        for (i, bit) in m_bits.iter().enumerate() {
+            if *bit == 1 {
+                m += &two.pow(i as u32);
+            }
+        }
 
         RawPlaintext(Cow::Owned(m))
     }
