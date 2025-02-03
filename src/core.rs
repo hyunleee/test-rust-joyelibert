@@ -19,6 +19,23 @@ pub use log::{info, warn}; // Use log crate when building application
 #[cfg(test)]
 use std::{println as info, println as warn};
 
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
+
+// dk.k 값에 따른 precomputed table을 전역에 저장
+static PRECOMPUTED_Z_EXP: Lazy<Mutex<Option<Vec<BigInt>>>> = Lazy::new(|| Mutex::new(None));
+
+// dk에 따른 lookup table을 초기화하는 함수입니다
+fn init_precomputed_z_exp(dk: &DecryptionKey) {
+    let mut table = Vec::with_capacity(dk.k);
+    let two = BigInt::from(2);
+    // i번째 원소는 2^(dk.k - i - 1)
+    for i in 0..dk.k {
+        let exp = two.pow((dk.k - i - 1) as u32);
+        table.push(exp);
+    }
+    *PRECOMPUTED_Z_EXP.lock().unwrap() = Some(table);
+}
 
 
 impl Keypair {
@@ -203,58 +220,62 @@ impl<'c, 'm> Decrypt<DecryptionKey, RawCiphertext<'c>, RawPlaintext<'m>> for Joy
 /// ///////////////////////////////////////////
 impl<'c, 'm> Decrypt<DecryptionKey, &'c RawCiphertext<'c>, RawPlaintext<'m>> for JoyeLibert {
     fn decrypt(dk: &DecryptionKey, c: &'c RawCiphertext<'c>) -> RawPlaintext<'m> {
-
         let mut m = BigInt::new();
 
-        // decrypt algorithm
-        let mut m_bits = vec![0; dk.k]; // 복호화된 비트들 저장할 벡터, 크기: dk.k (키의 길이)
-        let mut c_temp = c.0.clone().into_owned(); // 암호문(c)을 복사하여 c_temp에 저장
-        let p_minus_1 = &dk.p - BigInt::one(); // p-1 계산
-        let two = BigInt::from(2); // BigInt로 표현된 2를 생성
+        // 복호화된 비트들을 저장할 벡터, 길이: dk.k
+        let mut m_bits = vec![0; dk.k];
+        let mut c_temp = c.0.clone().into_owned(); // 암호문 복사
+        let p_minus_1 = &dk.p - BigInt::one();
+        let two = BigInt::from(2);
 
-        // exp = (p-1) / (2^k) 계산
-        let exp = &p_minus_1 / &two.pow(dk.k as u32);
-        // c^(exp) mod p 계산, c_mod는 초기 c의 사전 계산된 값
+        // exp = (p-1) / (2^k)
+        let exp = &p_minus_1 / two.pow(dk.k as u32);
+        // c_mod = c^exp mod p
         let mut c_mod = BigInt::mod_pow(&c_temp, &exp, &dk.p);
 
-        // d_exp = (p-1) / (2^k) 계산
+        // d_exp와 d를 미리 계산
         let d_exp = &p_minus_1 / two.pow(dk.k as u32);
-        // d = (y^d_exp)^-1 mod p 계산
         let mut d = BigInt::mod_inv(&BigInt::mod_pow(&dk.y, &d_exp, &dk.p), &dk.p)
             .expect("D의 역원을 계산할 수 없습니다.");
 
-        // 반복적으로 복호화 수행
+        // 미리 계산된 lookup table이 없으면 초기화,,
+        {
+            let table_lock = PRECOMPUTED_Z_EXP.lock().unwrap();
+            if table_lock.is_none() {
+                drop(table_lock);
+                init_precomputed_z_exp(dk);
+            }
+        }
+        // table이 초기화되었으므로 unwrap
+        let table_lock = PRECOMPUTED_Z_EXP.lock().unwrap();
+        let z_exp_table = table_lock.as_ref().unwrap();
+
+        // for 루프에서 미리 계산한 exponent를 사용
         for i in 0..dk.k {
-            // z_exp = 2^(k-i-1) 계산
-            let z_exp = two.pow(dk.k as u32 - (i as u32 + 1));
-            // z = c_mod^z_exp mod p 계산
-            let z = BigInt::mod_pow(&c_mod, &z_exp, &dk.p);
+            // table의 i번째 원소는 2^(dk.k - i - 1)
+            let z_exp = &z_exp_table[i];
+            let z = BigInt::mod_pow(&c_mod, z_exp, &dk.p);
 
             if z != BigInt::one() {
-                //z = 1이 아니면 해당 비트를 1로 설정
                 m_bits[i] = 1;
-                // c_mod = c_mod * d mod p 계산
                 c_mod = (&c_mod * &d) % &dk.p;
             }
 
             if i < dk.k - 2 {
-                // 다음 반복 위해 d = d^2 mod p 계산 (마지막 두 반복에서는 생략 가능)
                 d = (&d * &d) % &dk.p;
             }
         }
 
-        // 비트 벡터로 m 재구성
+        // 비트 벡터로 m 복원
         for (i, bit) in m_bits.iter().enumerate() {
             if *bit == 1 {
-                // 비트가 1이면 2^i를 m에 추가
-                m += &two.pow(i as u32);
+                m += two.pow(i as u32);
             }
         }
 
         RawPlaintext(Cow::Owned(m))
     }
 }
-
 
 
 impl<'c1, 'c2, 'd> Add<EncryptionKey, RawCiphertext<'c1>, RawCiphertext<'c2>, RawCiphertext<'d>>
