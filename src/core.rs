@@ -25,7 +25,7 @@ use std::sync::Mutex;
 // dk.k 값에 따른 precomputed table을 전역에 저장
 static PRECOMPUTED_Z_EXP: Lazy<Mutex<Option<Vec<BigInt>>>> = Lazy::new(|| Mutex::new(None));
 
-// dk에 따른 lookup table을 초기화하는 함수입니다
+// dk에 따른 lookup table을 초기화하는 함수입니다,
 fn init_precomputed_z_exp(dk: &DecryptionKey) {
     let mut table = Vec::with_capacity(dk.k);
     let two = BigInt::from(2);
@@ -427,16 +427,16 @@ mod tests {
     }
 
     
-    // #[test]
-    // fn test_correct_keygen() {
-    //     let (ek, dk): (EncryptionKey, _) = JoyeLibert::keypair_with_modulus_size(3072, 768).keys();
+    #[test]
+    fn test_correct_keygen() {
+        let (ek, dk): (EncryptionKey, _) = JoyeLibert::keypair_with_modulus_size(3072, 768).keys();
 
-    //     let m = RawPlaintext::from(BigInt::from(10));
-    //     let c = JoyeLibert::encrypt(&ek, m.clone()); // TODO avoid clone
+        let m = RawPlaintext::from(BigInt::from(10));
+        let c = JoyeLibert::encrypt(&ek, m.clone()); // TODO avoid clone
 
-    //     let recovered_m = JoyeLibert::decrypt(&dk, c);
-    //     assert_eq!(recovered_m, m);
-    // }
+        let recovered_m = JoyeLibert::decrypt(&dk, c);
+        assert_eq!(recovered_m, m);
+    }
 
     
 }
