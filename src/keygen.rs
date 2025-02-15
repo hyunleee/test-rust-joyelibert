@@ -5,9 +5,58 @@ use curv::arithmetic::traits::*;
 use crate::traits::*;
 use crate::{BigInt, Keypair, Paillier, JoyeLibert};
 
+// keygen.rs
+use once_cell::sync::OnceCell;
+use std::sync::Mutex;
+
+#[derive(Debug)]
+pub struct SBitTables {
+    pub s: usize,
+    pub t_b: Vec<BigInt>,
+    pub t_d: Vec<BigInt>,
+}
+
+// 전역(싱글톤)으로 s비트 테이블을 저장
+pub static GLOBAL_SBIT_TABLES: OnceCell<Mutex<SBitTables>> = OnceCell::new();
+
+fn generate_sbit_tables(keypair: &Keypair, s: usize) -> SBitTables {
+    let p = &keypair.p;
+    let k = keypair.k;
+    
+    // 1) g = y^((p-1)/2^s) mod p
+    let exp_g = (p - BigInt::one()) >> s;
+    let g = BigInt::mod_pow(&keypair.y, &exp_g, p);
+
+    // 2) T_B[i] = g^i mod p,  i=0..(2^s-1)
+    let two_s = 1 << s;
+    let mut t_b = Vec::with_capacity(two_s);
+    for i in 0..two_s {
+        let gi = BigInt::mod_pow(&g, &BigInt::from(i as u64), p);
+        t_b.push(gi);
+    }
+
+    // 3) T_D[j] = ( (y^-1)^(2^(j*s)) )^((p-1)/2^s) mod p,  j=0..(n-1)
+    let y_inv = BigInt::mod_inv(&keypair.y, p).expect("mod_inv failed");
+    let n = (k + s - 1)/s;
+    let mut t_d = Vec::with_capacity(n);
+    for j in 0..n {
+        let mut exponent_base = BigInt::one();
+        exponent_base <<= (j*s) as usize;
+        let base = BigInt::mod_pow(&y_inv, &exponent_base, p);
+        let h_j = BigInt::mod_pow(&base, &exp_g, p);
+        t_d.push(h_j);
+    }
+
+    SBitTables { s, t_b, t_d }
+}
 
 
-
+pub fn init_sbit_tables(keypair: &Keypair, s: usize) {
+    let tables = generate_sbit_tables(keypair, s);
+    GLOBAL_SBIT_TABLES
+        .set(Mutex::new(tables))
+        .expect("GLOBAL_SBIT_TABLES already set");
+}
 
 
 // should add picking up y 
@@ -17,7 +66,11 @@ impl KeyGeneration<Keypair> for JoyeLibert {
         let q = BigInt::from_str_radix("4120196551177181142320555358917013281978183440358644160962397416416651419832573597651802801626242982423889846226683075379947282629863952560097870868680519579633891708511743296095770310867584685074913216326441053246896857391796037932887524417348974952536315601038169386121392155952843813596136140931593728122169008557865411183438662740600610069316566164236323384590482864178595944057841296583144489527521836044888912356223978940167746163804598814936249956741645491488661083006092307", 10).unwrap();
         let y = BigInt::from_str_radix("62548236153162950920582674737354856125439401858536935144385993478413061121486980371928408128209882727400293417959163082927415186888758310853816398831608482615345358975922467320556759444327513855593968613290017810053873366431258522855175243977374138436538990932555457606692230904915657171120797095126846155240505784375721569057128071474458405434780305067205040970882897399363200676184249878843504717776101869955609218891065429003101919971540439099207159936288599988795066079552052205818092614899690358914284693646340847623105127868901377713630145449607939585652567911216294062409282783090098974624456450051476806945189886625063362488479433666652202473958746419152615374147650173740236169278951234633260109290538344784317270298764319652826843538369261172043757506922729020811433084597410979510743184933307191523299710824200421324858547697042175955139031354558155351464789556170881576555282202001716821184261307210544672041258818560179654243220444457158628485842317", 16).unwrap();
         let k: usize = 768;
-        Keypair { p, q, y, k}
+        let keypair = Keypair { p, q, y, k};
+
+        init_sbit_tables(&keypair, 8);
+
+        keypair
     }
     fn keypair_with_precomputated_prime(
         bit_length: usize, 
