@@ -214,26 +214,25 @@ impl<'c, 'm> Decrypt<DecryptionKey, &'c RawCiphertext<'c>, RawPlaintext<'m>> for
             .lock().unwrap();
         let sbit_table = &*lock; // SBitTables { s, t_b, t_d }
 
-        let s = sbit_table.s;  // 8
+        let s = sbit_table.s;
         let p = &dk.p;
-        let k = dk.k;          // 768
-        let n = (k + s - 1)/s; // 블록 수
+        let k = dk.k;
+        let n = (k + s - 1)/s;
 
-        // 1) m = 0
+        // 1) 
         let mut m = BigInt::zero();
 
-        // 2) c' = c^{(p-1)/2^k} mod p
+        // 2) 
         let exp = (p - BigInt::one()) >> k;
         let mut c_mod = BigInt::mod_pow(c.0.borrow(), &exp, p);
 
-        // 3) for i in 0..(n-1):
+        // 3) 
         for i in 0..(n-1) {
-            // 3.1) z = c_mod^(2^(k - (i+1)*s)) mod p
+            //
             let exponent = BigInt::one() << (k - (i+1)*s);
             let z = BigInt::mod_pow(&c_mod, &exponent, p);
 
-            // 3.2) find B = index s.t. T_B[B] == z
-            //     (슬라이드 20p: T_B[i] = g^i mod p => 역탐색 필요)
+            // 3.2) 
             let mut block_val: usize = 0;
             let max_val = 1 << s;
             for idx in 0..max_val {
@@ -243,8 +242,7 @@ impl<'c, 'm> Decrypt<DecryptionKey, &'c RawCiphertext<'c>, RawPlaintext<'m>> for
                 }
             }
 
-            // 3.3) c_mod <- c_mod * (T_D[i])^(block_val) mod p
-            //      (슬라이드 21p에서 "c = c * h_j^B mod p" 식에 해당)
+            // 3.3)
             let td_power = BigInt::mod_pow(
                 &sbit_table.t_d[i],
                 &BigInt::from(block_val as u64),
@@ -252,12 +250,11 @@ impl<'c, 'm> Decrypt<DecryptionKey, &'c RawCiphertext<'c>, RawPlaintext<'m>> for
             );
             c_mod = (&c_mod * td_power) % p;
 
-            // 3.4) m += block_val << (i*s)
+            // 3.4)
             m += BigInt::from(block_val as u64) << (i*s);
         }
 
-        // 4) 마지막 블록 (i = n-1)
-        //    슬라이드 21p 예시: B = T_B[c_mod],  m += B << ((n-1)*s)
+        // 4)
         let mut final_val: usize = 0;
         let max_val = 1 << s;
         for idx in 0..max_val {

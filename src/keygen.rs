@@ -16,18 +16,17 @@ pub struct SBitTables {
     pub t_d: Vec<BigInt>,
 }
 
-// 전역(싱글톤)으로 s비트 테이블을 저장
 pub static GLOBAL_SBIT_TABLES: OnceCell<Mutex<SBitTables>> = OnceCell::new();
 
 fn generate_sbit_tables(keypair: &Keypair, s: usize) -> SBitTables {
     let p = &keypair.p;
     let k = keypair.k;
     
-    // 1) g = y^((p-1)/2^s) mod p
+    // 1) g
     let exp_g = (p - BigInt::one()) >> s;
     let g = BigInt::mod_pow(&keypair.y, &exp_g, p);
 
-    // 2) T_B[i] = g^i mod p,  i=0..(2^s-1)
+    // 2) T_B[i]
     let two_s = 1 << s;
     let mut t_b = Vec::with_capacity(two_s);
     for i in 0..two_s {
@@ -35,7 +34,7 @@ fn generate_sbit_tables(keypair: &Keypair, s: usize) -> SBitTables {
         t_b.push(gi);
     }
 
-    // 3) T_D[j] = ( (y^-1)^(2^(j*s)) )^((p-1)/2^s) mod p,  j=0..(n-1)
+    // 3) T_D[j]
     let y_inv = BigInt::mod_inv(&keypair.y, p).expect("mod_inv failed");
     let n = (k + s - 1)/s;
     let mut t_d = Vec::with_capacity(n);
